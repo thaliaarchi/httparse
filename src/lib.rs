@@ -762,10 +762,10 @@ pub const EMPTY_HEADER: Header<'static> = Header { name: "", value: b"" };
 #[allow(missing_docs)]
 // WARNING: Exported for internal benchmarks, not fit for public consumption
 pub fn parse_version(bytes: &mut Bytes) -> Result<u8> {
-    if let Some(eight) = bytes.peek_n::<[u8; 8]>(8) {
+    if let Some(eight) = bytes.peek_n::<8>() {
         const H10: u64 = u64::from_ne_bytes(*b"HTTP/1.0");
         const H11: u64 = u64::from_ne_bytes(*b"HTTP/1.1");
-        // SAFETY: peek_n(8) before ensure within bounds
+        // SAFETY: peek_n before ensures within bounds
         unsafe {
             bytes.advance(8);
         }
@@ -797,7 +797,7 @@ pub fn parse_version(bytes: &mut Bytes) -> Result<u8> {
 pub fn parse_method<'a>(bytes: &mut Bytes<'a>) -> Result<&'a str> {
     const GET: [u8; 4] = *b"GET ";
     const POST: [u8; 4] = *b"POST";
-    match bytes.peek_n::<[u8; 4]>(4) {
+    match bytes.peek_n::<4>() {
         Some(GET) => {
             // SAFETY: we matched "GET " which has 4 bytes and is ASCII
             let method = unsafe {
