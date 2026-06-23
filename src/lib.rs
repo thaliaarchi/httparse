@@ -1072,178 +1072,173 @@ fn parse_headers_iter_uninit<'a>(
     }
 
     'headers: loop {
-        // Return the error `$err` if `ignore_invalid_headers_in_responses`
-        // is false, otherwise find the end of the current line and resume
-        // parsing on the next one.
-        macro_rules! handle_invalid_char {
-            ($bytes:ident, $b:ident, $err:ident) => {
-                if !config.ignore_invalid_headers {
-                    return Err(Error::$err);
-                }
-
-                let mut b = $b;
-
-                loop {
-                    if b == b'\r' {
-                        expect!(bytes.next() == b'\n' => Err(Error::$err));
-                        break;
-                    }
-                    if b == b'\n' {
-                        break;
-                    }
-                    if b == b'\0' {
-                        return Err(Error::$err);
-                    }
-                    b = next!($bytes);
-                }
-
-                $bytes.slice();
-
-                continue 'headers;
-            };
-        }
-
-        // a newline here means the head is over!
-        let b = next!(bytes);
-        if b == b'\r' {
-            expect!(bytes.next() == b'\n' => Err(Error::NewLine));
-            let end = bytes.as_ref().as_ptr() as usize;
-            result = Ok(Status::Complete(end - start));
-            break;
-        }
-        if b == b'\n' {
-            let end = bytes.as_ref().as_ptr() as usize;
-            result = Ok(Status::Complete(end - start));
-            break;
-        }
-        if !is_header_name_token(b) {
-            if config.allow_space_before_first_header_name
-                && autoshrink.num_headers == 0
-                && (b == b' ' || b == b'\t')
-            {
-                //advance past white space and then try parsing header again
-                while let Some(peek) = bytes.peek() {
-                    if peek == b' ' || peek == b'\t' {
-                        next!(bytes);
-                    } else {
-                        break;
-                    }
-                }
-                bytes.slice();
-                continue 'headers;
-            } else {
-                handle_invalid_char!(bytes, b, HeaderName);
-            }
-        }
-
-        #[allow(clippy::never_loop)]
-        // parse header name until colon
-        let header_name: &str = 'name: loop {
-            simd::match_header_name_vectored(bytes);
-            let mut b = next!(bytes);
-
-            // SAFETY: previously bumped by 1 with next! -> always safe.
-            let bslice = unsafe { bytes.slice_skip(1) };
-            // SAFETY: previous call to match_header_name_vectored ensured all bytes are valid
-            // header name chars, and as such also valid utf-8.
-            let name = unsafe { str::from_utf8_unchecked(bslice) };
-
-            if b == b':' {
-                break 'name name;
-            }
-
-            if config.allow_spaces_after_header_name {
-                while b == b' ' || b == b'\t' {
-                    b = next!(bytes);
-
-                    if b == b':' {
-                        bytes.slice();
-                        break 'name name;
-                    }
-                }
-            }
-
-            handle_invalid_char!(bytes, b, HeaderName);
-        };
-
         let mut b;
 
         #[allow(clippy::never_loop)]
-        let value_slice = 'value: loop {
-            // eat white space between colon and value
-            'whitespace_after_colon: loop {
-                b = next!(bytes);
-                if b == b' ' || b == b'\t' {
+        let invalid_header_err = 'header: loop {
+            // a newline here means the head is over!
+            b = next!(bytes);
+            if b == b'\r' {
+                expect!(bytes.next() == b'\n' => Err(Error::NewLine));
+                let end = bytes.as_ref().as_ptr() as usize;
+                result = Ok(Status::Complete(end - start));
+                break 'headers;
+            }
+            if b == b'\n' {
+                let end = bytes.as_ref().as_ptr() as usize;
+                result = Ok(Status::Complete(end - start));
+                break 'headers;
+            }
+            if !is_header_name_token(b) {
+                if config.allow_space_before_first_header_name
+                    && autoshrink.num_headers == 0
+                    && (b == b' ' || b == b'\t')
+                {
+                    //advance past white space and then try parsing header again
+                    while let Some(peek) = bytes.peek() {
+                        if peek == b' ' || peek == b'\t' {
+                            next!(bytes);
+                        } else {
+                            break;
+                        }
+                    }
                     bytes.slice();
-                    continue 'whitespace_after_colon;
-                }
-                if is_header_value_token(b) {
-                    break 'whitespace_after_colon;
-                }
-
-                if b == b'\r' {
-                    expect!(bytes.next() == b'\n' => Err(Error::HeaderValue));
-                } else if b != b'\n' {
-                    handle_invalid_char!(bytes, b, HeaderValue);
-                }
-
-                maybe_continue_after_obsolete_line_folding!(bytes, 'whitespace_after_colon);
-
-                let whitespace_slice = bytes.slice();
-
-                // This produces an empty slice that points to the beginning
-                // of the whitespace.
-                break 'value &whitespace_slice[0..0];
-            }
-
-            'value_lines: loop {
-                // parse value till EOL
-
-                simd::match_header_value_vectored(bytes);
-                let b = next!(bytes);
-
-                //found_ctl
-                let skip = if b == b'\r' {
-                    expect!(bytes.next() == b'\n' => Err(Error::HeaderValue));
-                    2
-                } else if b == b'\n' {
-                    1
+                    continue 'headers;
                 } else {
-                    handle_invalid_char!(bytes, b, HeaderValue);
-                };
-
-                maybe_continue_after_obsolete_line_folding!(bytes, 'value_lines);
-
-                // SAFETY: having just checked that a newline exists, it's safe to skip it.
-                unsafe {
-                    break 'value bytes.slice_skip(skip);
+                    break 'header Error::HeaderName;
                 }
             }
+
+            #[allow(clippy::never_loop)]
+            // parse header name until colon
+            let header_name: &str = 'name: loop {
+                simd::match_header_name_vectored(bytes);
+                b = next!(bytes);
+
+                // SAFETY: previously bumped by 1 with next! -> always safe.
+                let bslice = unsafe { bytes.slice_skip(1) };
+                // SAFETY: previous call to match_header_name_vectored ensured all bytes are valid
+                // header name chars, and as such also valid utf-8.
+                let name = unsafe { str::from_utf8_unchecked(bslice) };
+
+                if b == b':' {
+                    break 'name name;
+                }
+
+                if config.allow_spaces_after_header_name {
+                    while b == b' ' || b == b'\t' {
+                        b = next!(bytes);
+
+                        if b == b':' {
+                            bytes.slice();
+                            break 'name name;
+                        }
+                    }
+                }
+
+                break 'header Error::HeaderName;
+            };
+
+            #[allow(clippy::never_loop)]
+            let value_slice = 'value: loop {
+                // eat white space between colon and value
+                'whitespace_after_colon: loop {
+                    b = next!(bytes);
+                    if b == b' ' || b == b'\t' {
+                        bytes.slice();
+                        continue 'whitespace_after_colon;
+                    }
+                    if is_header_value_token(b) {
+                        break 'whitespace_after_colon;
+                    }
+
+                    if b == b'\r' {
+                        expect!(bytes.next() == b'\n' => Err(Error::HeaderValue));
+                    } else if b != b'\n' {
+                        break 'header Error::HeaderValue;
+                    }
+
+                    maybe_continue_after_obsolete_line_folding!(bytes, 'whitespace_after_colon);
+
+                    let whitespace_slice = bytes.slice();
+
+                    // This produces an empty slice that points to the beginning
+                    // of the whitespace.
+                    break 'value &whitespace_slice[0..0];
+                }
+
+                'value_lines: loop {
+                    // parse value till EOL
+
+                    simd::match_header_value_vectored(bytes);
+                    b = next!(bytes);
+
+                    //found_ctl
+                    let skip = if b == b'\r' {
+                        expect!(bytes.next() == b'\n' => Err(Error::HeaderValue));
+                        2
+                    } else if b == b'\n' {
+                        1
+                    } else {
+                        break 'header Error::HeaderValue;
+                    };
+
+                    maybe_continue_after_obsolete_line_folding!(bytes, 'value_lines);
+
+                    // SAFETY: having just checked that a newline exists, it's safe to skip it.
+                    unsafe {
+                        break 'value bytes.slice_skip(skip);
+                    }
+                }
+            };
+
+            let uninit_header = match iter.next() {
+                Some(header) => header,
+                None => break 'headers
+            };
+
+            // trim trailing whitespace in the header
+            let header_value = if let Some(last_visible) = value_slice
+                .iter()
+                .rposition(|b| *b != b' ' && *b != b'\t' && *b != b'\r' && *b != b'\n')
+            {
+                // There is at least one non-whitespace character.
+                &value_slice[0..last_visible+1]
+            } else {
+                // There is no non-whitespace character. This can only happen when value_slice is
+                // empty.
+                value_slice
+            };
+
+            *uninit_header = MaybeUninit::new(Header {
+                name: header_name,
+                value: header_value,
+            });
+            autoshrink.num_headers += 1;
+            continue 'headers;
         };
 
-        let uninit_header = match iter.next() {
-            Some(header) => header,
-            None => break 'headers
-        };
+        // The header contains an invalid character. Reject the header if
+        // `ignore_invalid_headers_in_responses` is false; otherwise find the
+        // end of the current line and resume parsing on the next one.
+        if !config.ignore_invalid_headers {
+            return Err(invalid_header_err);
+        }
 
-        // trim trailing whitespace in the header
-        let header_value = if let Some(last_visible) = value_slice
-            .iter()
-            .rposition(|b| *b != b' ' && *b != b'\t' && *b != b'\r' && *b != b'\n')
-        {
-            // There is at least one non-whitespace character.
-            &value_slice[0..last_visible+1]
-        } else {
-            // There is no non-whitespace character. This can only happen when value_slice is
-            // empty.
-            value_slice
-        };
-
-        *uninit_header = MaybeUninit::new(Header {
-            name: header_name,
-            value: header_value,
-        });
-        autoshrink.num_headers += 1;
+        loop {
+            if b == b'\r' {
+                expect!(bytes.next() == b'\n' => Err(invalid_header_err));
+                break;
+            }
+            if b == b'\n' {
+                break;
+            }
+            if b == b'\0' {
+                return Err(invalid_header_err);
+            }
+            b = next!(bytes);
+        }
+        bytes.slice();
     }
 
     result
